@@ -61,6 +61,9 @@ func (in *LocalNodeInfo) deepEqual(other *LocalNodeInfo) bool {
 	if in.IsBeingDeleted != other.IsBeingDeleted {
 		return false
 	}
+	if in.MarkedForDeletionByAutoscaler != other.MarkedForDeletionByAutoscaler {
+		return false
+	}
 	if in.UnderlayProtocol != other.UnderlayProtocol {
 		return false
 	}

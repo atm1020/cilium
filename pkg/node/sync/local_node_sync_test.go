@@ -488,3 +488,127 @@ func testNodeDeletion(t *testing.T, nodeEvent resource.Event[*slim_corev1.Node])
 	}
 	assert.True(t, foundDeleted, "Node should be marked as being deleted")
 }
+
+func TestLocalNodeSync_AutoscalerTaint(t *testing.T) {
+	toBeDeleted := slim_corev1.Taint{Key: toBeDeletedTaint, Effect: slim_corev1.TaintEffectNoSchedule}
+	unschedulable := slim_corev1.Taint{Key: "node.kubernetes.io/unschedulable", Effect: slim_corev1.TaintEffectNoSchedule}
+
+	type step struct {
+		taints                    []slim_corev1.Taint
+		expectedToMarkedToDeleted bool
+	}
+	tests := []struct {
+		name  string
+		steps []step
+	}{
+		{
+			name: "upsert_with_to_be_deleted_taint",
+			steps: []step{
+				{taints: nil, expectedToMarkedToDeleted: false},
+				{taints: []slim_corev1.Taint{toBeDeleted}, expectedToMarkedToDeleted: true},
+			},
+		},
+		{
+			name: "taint_removed",
+			steps: []step{
+				{taints: []slim_corev1.Taint{toBeDeleted}, expectedToMarkedToDeleted: true},
+				{taints: nil, expectedToMarkedToDeleted: false},
+			},
+		},
+		{
+			name: "other_taint_only",
+			steps: []step{
+				{taints: []slim_corev1.Taint{unschedulable}, expectedToMarkedToDeleted: false},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upsert, markedForDeletion := startLocalNodeSync(t)
+			for i, s := range tt.steps {
+				upsert(s.taints)
+				assert.Equal(t, s.expectedToMarkedToDeleted, markedForDeletion(),
+					"step %d: MarkedForDeletionByAutoscaler with taints %v", i, s.taints)
+			}
+		})
+	}
+}
+
+// startLocalNodeSync runs SyncLocalNode against a fake local Node. upsert sends
+// the Node with the given taints and returns once it has been processed;
+// markedForDeletion reports the resulting MarkedForDeletionByAutoscaler.
+func startLocalNodeSync(t *testing.T) (upsert func([]slim_corev1.Taint), markedForDeletion func() bool) {
+	t.Helper()
+
+	// Unbuffered so each send blocks until the sync loop takes the event. Reading
+	// the store directly avoids LocalNodeStore.Observe, which is rate-limited and
+	// coalesces short-lived states.
+	events := make(chan resource.Event[*slim_corev1.Node])
+
+	sync := newLocalNodeSynchronizer(localNodeSynchronizerParams{
+		Logger: hivetest.Logger(t),
+		Config: &option.DaemonConfig{
+			IPv4NodeAddr: "1.2.3.4",
+			IPv6NodeAddr: "fd00::1",
+		},
+		IPsecConfig:  fakeipsec.Config{},
+		K8sLocalNode: &fakeLocalNode{events: events},
+		K8sCiliumLocalNode: &mockResource[*v2.CiliumNode]{
+			items: []resource.Event[*v2.CiliumNode]{
+				{Kind: resource.Sync, Done: func(err error) {}},
+			},
+		},
+	})
+
+	local := node.LocalNode{Node: types.Node{Name: "test-node"}, Local: &node.LocalNodeInfo{}}
+	store := node.NewTestLocalNodeStore(local)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+
+	// SyncLocalNode ranges over the event channel and ignores ctx, so closing the
+	// channel is what stops it. Wait for it to return so no goroutine outlives the test.
+	syncDone := make(chan struct{})
+	go func() {
+		defer close(syncDone)
+		sync.SyncLocalNode(ctx, store)
+	}()
+	t.Cleanup(func() {
+		close(events)
+		<-syncDone
+	})
+
+	send := func(taints []slim_corev1.Taint) {
+		ev := resource.Event[*slim_corev1.Node]{
+			Kind: resource.Upsert,
+			Key:  resource.Key{Name: "test-node"},
+			Object: &slim_corev1.Node{
+				ObjectMeta: slim_metav1.ObjectMeta{Name: "test-node", UID: k8stypes.UID("test-uid")},
+				Spec:       slim_corev1.NodeSpec{Taints: taints},
+				Status: slim_corev1.NodeStatus{Addresses: []slim_corev1.NodeAddress{
+					{Type: slim_corev1.NodeInternalIP, Address: "10.0.0.1"},
+				}},
+			},
+			Done: func(err error) {},
+		}
+		select {
+		case events <- ev:
+		case <-ctx.Done():
+			t.Fatal("Timeout sending node event")
+		}
+	}
+
+	upsert = func(taints []slim_corev1.Taint) {
+		// The loop only takes the second event after it has finished handling the
+		// first, so the store reflects these taints once both sends return.
+		send(taints)
+		send(taints)
+	}
+	markedForDeletion = func() bool {
+		ln, err := store.Get(ctx)
+		require.NoError(t, err)
+		return ln.Local.MarkedForDeletionByAutoscaler
+	}
+	return upsert, markedForDeletion
+}
