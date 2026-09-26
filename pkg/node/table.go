@@ -170,6 +170,10 @@ type LocalNodeInfo struct {
 	IPv6PodSubnets []ip.Prefix
 	// IsBeingDeleted indicates that the local node is being deleted.
 	IsBeingDeleted bool
+	// MarkedForDeletionByAutoscaler indicates that the local node carries the
+	// ToBeDeletedByClusterAutoscaler taint, which the Cluster Autoscaler adds before
+	// deleting a node. Unlike IsBeingDeleted it is cleared when the taint is removed.
+	MarkedForDeletionByAutoscaler bool
 	// UnderlayProtocol is the IP family of our underlay.
 	UnderlayProtocol tunnel.UnderlayProtocol
 }

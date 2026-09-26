@@ -52,52 +52,67 @@ func TestKubeproxyHealthzHandler(t *testing.T) {
 	lastUpdatedTs := currentTs.Add(-2 * time.Minute)
 
 	testCases := []struct {
-		name                string
-		status              string
-		nodeIsBeingDeleted  bool
-		nodeStoreReturnErr  bool
-		expectedStatusCode  int
-		expectedLastUpdated time.Time
+		name                              string
+		status                            string
+		nodeIsBeingDeleted                bool
+		nodeMarkedForDeletionByAutoscaler bool
+		nodeStoreReturnErr                bool
+		expectedStatusCode                int
+		expectedLastUpdated               time.Time
 	}{
 		{
-			name:                "healthy node",
-			status:              models.StatusStateOk,
-			nodeIsBeingDeleted:  false,
-			nodeStoreReturnErr:  false,
-			expectedStatusCode:  http.StatusOK,
-			expectedLastUpdated: currentTs,
+			name:                              "healthy node",
+			status:                            models.StatusStateOk,
+			nodeIsBeingDeleted:                false,
+			nodeMarkedForDeletionByAutoscaler: false,
+			nodeStoreReturnErr:                false,
+			expectedStatusCode:                http.StatusOK,
+			expectedLastUpdated:               currentTs,
 		},
 		{
-			name:                "node being deleted",
-			status:              models.StatusStateOk,
-			nodeIsBeingDeleted:  true,
-			nodeStoreReturnErr:  false,
-			expectedStatusCode:  http.StatusServiceUnavailable,
-			expectedLastUpdated: lastUpdatedTs,
+			name:                              "node being deleted",
+			status:                            models.StatusStateOk,
+			nodeIsBeingDeleted:                true,
+			nodeMarkedForDeletionByAutoscaler: false,
+			nodeStoreReturnErr:                false,
+			expectedStatusCode:                http.StatusServiceUnavailable,
+			expectedLastUpdated:               lastUpdatedTs,
 		},
 		{
-			name:                "unhealthy warning status",
-			status:              models.StatusStateWarning,
-			nodeIsBeingDeleted:  false,
-			nodeStoreReturnErr:  false,
-			expectedStatusCode:  http.StatusServiceUnavailable,
-			expectedLastUpdated: lastUpdatedTs,
+			name:                              "node marked for deletion by autoscaler",
+			status:                            models.StatusStateOk,
+			nodeIsBeingDeleted:                false,
+			nodeMarkedForDeletionByAutoscaler: true,
+			nodeStoreReturnErr:                false,
+			expectedStatusCode:                http.StatusServiceUnavailable,
+			expectedLastUpdated:               lastUpdatedTs,
 		},
 		{
-			name:                "unhealthy failure status",
-			status:              models.StatusStateFailure,
-			nodeIsBeingDeleted:  false,
-			nodeStoreReturnErr:  false,
-			expectedStatusCode:  http.StatusServiceUnavailable,
-			expectedLastUpdated: lastUpdatedTs,
+			name:                              "unhealthy warning status",
+			status:                            models.StatusStateWarning,
+			nodeIsBeingDeleted:                false,
+			nodeMarkedForDeletionByAutoscaler: false,
+			nodeStoreReturnErr:                false,
+			expectedStatusCode:                http.StatusServiceUnavailable,
+			expectedLastUpdated:               lastUpdatedTs,
 		},
 		{
-			name:                "unhealthy status and node being deleted",
-			status:              models.StatusStateWarning,
-			nodeIsBeingDeleted:  true,
-			nodeStoreReturnErr:  false,
-			expectedStatusCode:  http.StatusServiceUnavailable,
-			expectedLastUpdated: lastUpdatedTs,
+			name:                              "unhealthy failure status",
+			status:                            models.StatusStateFailure,
+			nodeIsBeingDeleted:                false,
+			nodeMarkedForDeletionByAutoscaler: false,
+			nodeStoreReturnErr:                false,
+			expectedStatusCode:                http.StatusServiceUnavailable,
+			expectedLastUpdated:               lastUpdatedTs,
+		},
+		{
+			name:                              "unhealthy status and node being deleted",
+			status:                            models.StatusStateWarning,
+			nodeIsBeingDeleted:                true,
+			nodeMarkedForDeletionByAutoscaler: false,
+			nodeStoreReturnErr:                false,
+			expectedStatusCode:                http.StatusServiceUnavailable,
+			expectedLastUpdated:               lastUpdatedTs,
 		},
 	}
 
@@ -117,7 +132,10 @@ func TestKubeproxyHealthzHandler(t *testing.T) {
 
 			mockNode := &mockLocalNodeStore{
 				node: &node.LocalNode{
-					Local: &node.LocalNodeInfo{IsBeingDeleted: tc.nodeIsBeingDeleted},
+					Local: &node.LocalNodeInfo{
+						IsBeingDeleted:                tc.nodeIsBeingDeleted,
+						MarkedForDeletionByAutoscaler: tc.nodeMarkedForDeletionByAutoscaler,
+					},
 				},
 				returnError: tc.nodeStoreReturnErr,
 			}

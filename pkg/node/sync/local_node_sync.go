@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net"
 	"net/netip"
+	"slices"
 
 	"github.com/cilium/hive/cell"
 
@@ -28,6 +29,12 @@ import (
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/source"
+)
+
+const (
+	// toBeDeletedTaint is a taint used by the Cluster Autoscaler before marking a node for deletion. Defined in
+	// https://github.com/kubernetes/autoscaler/blob/e80ab518340f88f364fe3ef063f8303755125971/cluster-autoscaler/utils/deletetaint/delete.go#L36
+	toBeDeletedTaint = "ToBeDeletedByClusterAutoscaler"
 )
 
 var LocalNodeSyncCell = cell.Module(
@@ -116,6 +123,19 @@ func (ini *localNodeSynchronizer) SyncLocalNode(ctx context.Context, store *node
 					ini.syncFromK8s(ln, new)
 				})
 			}
+
+			markedForDeletionByAutoscaler :=slices.ContainsFunc(ev.Object.Spec.Taints, func(t slim_corev1.Taint) bool {
+						return t.Key == toBeDeletedTaint
+			})
+			if ini.old.Local.MarkedForDeletionByAutoscaler != markedForDeletionByAutoscaler {
+				store.Update(func(ln *node.LocalNode) {
+					ln.Local.MarkedForDeletionByAutoscaler = markedForDeletionByAutoscaler
+				})
+			 	ini.old.Local.MarkedForDeletionByAutoscaler = markedForDeletionByAutoscaler
+			}
+			
+
+
 		} else if ev.Kind == resource.Delete {
 			ini.Logger.Info("Received Local node Delete event", logfields.Node, ev.Object)
 			// Mark as being deleted on explicit delete events too
